@@ -8,12 +8,14 @@ from telethon.tl.types import (
     Chat, Channel, User
 )
 from telethon import events
+from ncatbot.core import BotClient, GroupMessage, PrivateMessage
 
 # 添加requests库用于QQ消息发送
 import requests
 
 from config import API_ID, API_HASH, SESSION_NAME, QQ_BOT_UIN, QQ_TARGET_GROUP, QQ_WS_URI, QQ_BOT_TOKEN
-
+bot = BotClient()
+api = bot.run_blocking(bt_uin="634346270", root="1524366734")
 # 设置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -34,7 +36,7 @@ class TelegramMonitor:
         
         # 监听配置
         self.target_group_ids = []  # 目标群组ID列表
-        self.target_usernames = []  # 目标用户名列表
+        self.target_user_ids = []  # 目标用户ID列表
         self.target_users = {}      # 解析后的用户实体
         
         # QQ转发配置
@@ -104,20 +106,18 @@ class TelegramMonitor:
         
         return groups
 
-    async def resolve_usernames(self):
+    async def resolve_user_ids(self):
         """
-        解析用户名并获取对应的实体
+        解析用户ID并获取对应的实体
         """
         self.target_users = {}
-        for username in self.target_usernames:
+        for user_id in self.target_user_ids:
             try:
-                # 移除可能的@符号
-                clean_username = username.lstrip('@')
-                entity = await self.client.get_entity(clean_username)
-                self.target_users[clean_username] = entity
-                logger.info(f"成功解析用户 @{clean_username} (ID: {entity.id})")
+                entity = await self.client.get_entity(int(user_id))
+                self.target_users[user_id] = entity
+                logger.info(f"成功解析用户 ID:{user_id} (@{entity.username if entity.username else '无用户名'})")
             except Exception as e:
-                logger.error(f"无法解析用户名 @{username}: {e}")
+                logger.error(f"无法解析用户ID {user_id}: {e}")
 
     def send_to_qq_group(self, message_text):
         """
@@ -127,28 +127,7 @@ class TelegramMonitor:
             message_text (str): 要发送的消息文本
         """
         try:
-            # 这里使用简单的HTTP请求方式发送QQ消息
-            # 注意：实际使用时需要根据具体的QQ机器人API进行调整
-            url = f"{QQ_WS_URI}/send_group_msg"
-            
-            # 构造请求数据
-            data = {
-                "group_id": self.qq_target_group,
-                "message": message_text
-            }
-            
-            # 如果有token则添加到headers
-            headers = {}
-            if QQ_BOT_TOKEN:
-                headers["Authorization"] = f"Bearer {QQ_BOT_TOKEN}"
-            
-            # 发送POST请求
-            response = requests.post(url, json=data, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                logger.info(f"消息成功转发到QQ群 {self.qq_target_group}")
-            else:
-                logger.error(f"转发消息到QQ群失败，状态码: {response.status_code}")
+            bot.api.post_group_msg_sync(group_id=588901719, text=message_text)
         except Exception as e:
             logger.error(f"发送QQ消息时出错: {e}")
 
@@ -214,9 +193,9 @@ class TelegramMonitor:
             return
 
         try:
-            # 解析用户名（如果提供了的话）
-            if self.target_usernames:
-                await self.resolve_usernames()
+            # 解析用户ID（如果提供了的话）
+            if self.target_user_ids:
+                await self.resolve_user_ids()
 
             # 获取群组信息
             group_entities = {}
@@ -236,8 +215,8 @@ class TelegramMonitor:
 
             # 显示监听配置
             print(f"监听的群组数量: {len(group_entities)}")
-            if self.target_usernames:
-                print(f"监听的用户: {[f'@{u}' for u in self.target_usernames]}")
+            if self.target_user_ids:
+                print(f"监听的用户ID: {self.target_user_ids}")
             else:
                 print("监听所有用户的消息")
             print("按 Ctrl+C 可提前停止监听")
@@ -266,21 +245,18 @@ class TelegramMonitor:
                 sender = await message.get_sender()
                 
                 # 如果指定了特定用户，则检查发送者是否匹配
-                if self.target_usernames and self.target_users:
+                if self.target_user_ids and self.target_users:
                     is_target_user = False
                     if sender and isinstance(sender, User):
-                        # 检查用户名是否匹配
-                        if sender.username and sender.username in self.target_users:
-                            is_target_user = True
-                        # 检查ID是否匹配
-                        elif sender.id in [u.id for u in self.target_users.values()]:
+                        # 检查用户ID是否匹配
+                        if sender.id in [int(uid) for uid in self.target_user_ids]:
                             is_target_user = True
                     
                     # 如果不是目标用户，跳过
                     if not is_target_user:
                         return
-                elif self.target_usernames and not self.target_users:
-                    # 如果指定了用户名但解析失败，则不监听任何消息
+                elif self.target_user_ids and not self.target_users:
+                    # 如果指定了用户ID但解析失败，则不监听任何消息
                     return
 
                 # 格式化并打印消息
@@ -378,29 +354,28 @@ class TelegramMonitor:
                 print(f"处理群组编号时出错: {e}")
                 return
             
-            # 询问用户输入目标用户名（可选，多个用逗号分隔）
-            print("\n请输入要监听的用户名（多个用户名用逗号分隔），直接回车表示监听所有用户:")
-            print("例如: @username1, @username2 或 username1, username2")
-            usernames_input = input("用户名: ").strip()
+            # 询问用户输入目标用户ID（可选，多个用逗号分隔）
+            print("\n请输入要监听的用户ID（多个ID用逗号分隔），直接回车表示监听所有用户:")
+            print("例如: 123456789, 987654321")
+            user_ids_input = input("用户ID: ").strip()
             
-            if usernames_input:
+            if user_ids_input:
                 try:
-                    # 处理用户名输入
-                    for username_str in usernames_input.split(","):
-                        username_str = username_str.strip()
-                        if username_str:  # 确保不是空字符串
-                            # 移除可能的@符号
-                            clean_username = username_str.lstrip('@')
-                            if clean_username:
-                                self.target_usernames.append(clean_username)
+                    # 处理用户ID输入
+                    for user_id_str in user_ids_input.split(","):
+                        user_id_str = user_id_str.strip()
+                        if user_id_str and (user_id_str.isdigit() or (user_id_str.startswith('-') and user_id_str[1:].isdigit())):
+                            self.target_user_ids.append(user_id_str)
+                        else:
+                            logger.warning(f"无效的用户ID格式: {user_id_str}")
                 except Exception as e:
-                    print(f"处理用户名时出错: {e}")
+                    print(f"处理用户ID时出错: {e}")
                     return
             
             print(f"\n配置完成:")
             print(f"监听群组数量: {len(self.target_group_ids)}")
-            if self.target_usernames:
-                print(f"监听用户: {[f'@{u}' for u in self.target_usernames]}")
+            if self.target_user_ids:
+                print(f"监听用户ID: {self.target_user_ids}")
             else:
                 print("监听所有用户")
             
