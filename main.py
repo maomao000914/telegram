@@ -10,12 +10,10 @@ from telethon.tl.types import (
 from telethon import events
 from ncatbot.core import BotClient, GroupMessage, PrivateMessage
 
-# 添加requests库用于QQ消息发送
-import requests
 
-from config import API_ID, API_HASH, SESSION_NAME, QQ_BOT_UIN, QQ_TARGET_GROUP, QQ_WS_URI, QQ_BOT_TOKEN
+from config import API_ID, API_HASH, SESSION_NAME, QQ_BOT_UIN, QQ_TARGET_GROUP
 bot = BotClient()
-api = bot.run_blocking(bt_uin="634346270", root="1524366734")
+api = bot.run_blocking(bt_uin=QQ_BOT_UIN, root="1524366734")
 # 设置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -127,7 +125,7 @@ class TelegramMonitor:
             message_text (str): 要发送的消息文本
         """
         try:
-            bot.api.post_group_msg_sync(group_id=588901719, text=message_text)
+            bot.api.post_group_msg_sync(group_id=QQ_TARGET_GROUP, text=message_text)
         except Exception as e:
             logger.error(f"发送QQ消息时出错: {e}")
 
