@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.types import (
@@ -34,8 +34,7 @@ class TelegramMonitor:
         
         # 监听配置
         self.target_group_ids = []  # 目标群组ID列表
-        self.target_user_ids = []  # 目标用户ID列表
-        self.target_users = {}      # 解析后的用户实体
+        self.target_user_ids = []   # 目标用户ID列表
         
         # QQ转发配置
         self.qq_target_group = QQ_TARGET_GROUP
@@ -104,19 +103,6 @@ class TelegramMonitor:
         
         return groups
 
-    async def resolve_user_ids(self):
-        """
-        解析用户ID并获取对应的实体
-        """
-        self.target_users = {}
-        for user_id in self.target_user_ids:
-            try:
-                entity = await self.client.get_entity(int(user_id))
-                self.target_users[user_id] = entity
-                logger.info(f"成功解析用户 ID:{user_id} (@{entity.username if entity.username else '无用户名'})")
-            except Exception as e:
-                logger.error(f"无法解析用户ID {user_id}: {e}")
-
     def send_to_qq_group(self, message_text):
         """
         将消息发送到QQ群
@@ -129,7 +115,37 @@ class TelegramMonitor:
         except Exception as e:
             logger.error(f"发送QQ消息时出错: {e}")
 
-    async def format_message_as_json(self, message, group_title):
+    def format_links(self, text):
+        """
+        格式化文本中的链接，防止在QQ中被自动识别为可点击的超链接
+        
+        Args:
+            text (str): 包含链接的原始文本
+            
+        Returns:
+            str: 格式化后的文本，链接不再可点击
+        """
+        if not text:
+            return text
+            
+        # 将http://和https://链接中的点号替换为特殊字符，防止链接被识别
+        import re
+        
+        # 使用零宽空格(\u200B)插入到链接中，防止链接被识别
+        def replace_url(match):
+            url = match.group(0)
+            # 在特定位置插入零宽空格，防止链接被识别
+            if "https://" in url:
+                return url.replace("https://", "https://\u200B")
+            elif "http://" in url:
+                return url.replace("http://", "http://\u200B")
+            return url
+            
+        # 匹配http和https链接
+        formatted_text = re.sub(r'https?://[^\s]+', replace_url, text)
+        return formatted_text
+
+    async def format_message_as_json(self, message, group_title, is_edited=False):
         """
         将消息格式化为JSON格式
         """
@@ -176,7 +192,9 @@ class TelegramMonitor:
             "message": {
                 "id": message.id,
                 "text": message.text,
-                "date": message.date.isoformat() if message.date else None
+                "date": message.date.isoformat() if message.date else None,
+                "edited": message.edit_date.isoformat() if message.edit_date else None,
+                "is_edited": is_edited
             }
         }
         
@@ -191,10 +209,6 @@ class TelegramMonitor:
             return
 
         try:
-            # 解析用户ID（如果提供了的话）
-            if self.target_user_ids:
-                await self.resolve_user_ids()
-
             # 获取群组信息
             group_entities = {}
             for group_id in self.target_group_ids:
@@ -243,19 +257,16 @@ class TelegramMonitor:
                 sender = await message.get_sender()
                 
                 # 如果指定了特定用户，则检查发送者是否匹配
-                if self.target_user_ids and self.target_users:
+                if self.target_user_ids:
                     is_target_user = False
                     if sender and isinstance(sender, User):
-                        # 检查用户ID是否匹配
-                        if sender.id in [int(uid) for uid in self.target_user_ids]:
+                        # 检查ID是否匹配
+                        if sender.id in self.target_user_ids:
                             is_target_user = True
                     
                     # 如果不是目标用户，跳过
                     if not is_target_user:
                         return
-                elif self.target_user_ids and not self.target_users:
-                    # 如果指定了用户ID但解析失败，则不监听任何消息
-                    return
 
                 # 格式化并打印消息
                 try:
@@ -269,16 +280,101 @@ class TelegramMonitor:
                     # 构造要发送的文本消息
                     sender_name = message_json['sender']['full_name']
                     message_text = message_json['message']['text']
-                    formatted_message = f"[Telegram转发]\n群组: {group_title}\n发送者: {sender_name}\n内容: {message_text}"
+                    # 获取消息时间并格式化
+                    message_time = message_json['message']['date']
+                    if message_time:
+                        # 将ISO格式时间转换为更易读的格式
+                        from datetime import datetime
+                        try:
+                            dt = datetime.fromisoformat(message_time.replace('Z', '+00:00'))
+                            # 转换为北京时间 (UTC+8)
+                            beijing_time = dt.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
+                            formatted_time = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
+                        except:
+                            formatted_time = message_time
+                    else:
+                        formatted_time = "未知时间"
+                    
+                    # 格式化链接，防止在QQ中被自动识别为可点击的超链接
+                    formatted_message_text = self.format_links(message_text)
+                    message_type = "[Telegram转发-编辑消息]" if message_json['message']['is_edited'] else "[Telegram转发]"
+                    formatted_message = f"时间: {formatted_time}\n内容: {formatted_message_text}"
                     self.send_to_qq_group(formatted_message)
                 except Exception as e:
                     logger.error(f"格式化消息时出错: {e}")
+            
+            # 定义处理编辑消息的回调函数
+            async def edit_handler(event):
+                message = event.message
+                group_id = message.chat_id
+                
+                # 检查是否是指定监听的群组
+                if group_id not in group_entities:
+                    return
+                
+                # 如果消息没有文本内容，跳过
+                if not message.text:
+                    return
+                
+                # 获取发送者
+                sender = await message.get_sender()
+                
+                # 如果指定了特定用户，则检查发送者是否匹配
+                if self.target_user_ids:
+                    is_target_user = False
+                    if sender and isinstance(sender, User):
+                        # 检查ID是否匹配
+                        if sender.id in self.target_user_ids:
+                            is_target_user = True
+                    
+                    # 如果不是目标用户，跳过
+                    if not is_target_user:
+                        return
+
+                # 格式化并打印消息
+                try:
+                    group_title = group_entities[group_id].title
+                    message_json = await self.format_message_as_json(message, group_title, is_edited=True)
+                    # 以美化的JSON格式打印
+                    json_output = json.dumps(message_json, ensure_ascii=False, indent=2)
+                    print(json_output)
+                    
+                    # 转发消息到QQ群
+                    # 构造要发送的文本消息
+                    sender_name = message_json['sender']['full_name']
+                    message_text = message_json['message']['text']
+                    # 获取消息时间并格式化
+                    message_time = message_json['message']['edited'] or message_json['message']['date']
+                    if message_time:
+                        # 将ISO格式时间转换为更易读的格式
+                        from datetime import datetime
+                        try:
+                            dt = datetime.fromisoformat(message_time.replace('Z', '+00:00'))
+                            # 转换为北京时间 (UTC+8)
+                            beijing_time = dt.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
+                            formatted_time = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
+                        except:
+                            formatted_time = message_time
+                    else:
+                        formatted_time = "未知时间"
+                    
+                    # 格式化链接，防止在QQ中被自动识别为可点击的超链接
+                    formatted_message_text = self.format_links(message_text)
+                    formatted_message = f"时间: {formatted_time}\n内容: {formatted_message_text}"
+                    self.send_to_qq_group(formatted_message)
+                except Exception as e:
+                    logger.error(f"格式化编辑消息时出错: {e}")
                 
             # 为每个群组注册事件处理器
             for group_id in self.target_group_ids:
                 self.client.add_event_handler(
                     handler, 
                     events.NewMessage(chats=group_id)
+                )
+                # 注册编辑消息事件处理器
+                self.client.add_event_handler(
+                    edit_handler,
+                    events.MessageEdited(chats=group_id)
                 )
             
             # 保持监听
@@ -360,12 +456,7 @@ class TelegramMonitor:
             if user_ids_input:
                 try:
                     # 处理用户ID输入
-                    for user_id_str in user_ids_input.split(","):
-                        user_id_str = user_id_str.strip()
-                        if user_id_str and (user_id_str.isdigit() or (user_id_str.startswith('-') and user_id_str[1:].isdigit())):
-                            self.target_user_ids.append(user_id_str)
-                        else:
-                            logger.warning(f"无效的用户ID格式: {user_id_str}")
+                    self.target_user_ids = self.parse_input_ids(user_ids_input)
                 except Exception as e:
                     print(f"处理用户ID时出错: {e}")
                     return
@@ -397,5 +488,4 @@ async def main():
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())
