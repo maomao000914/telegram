@@ -1,7 +1,7 @@
 # ========= 导入必要模块 ==========
 from ncatbot.core import BotClient, GroupMessage, PrivateMessage
 from ncatbot.utils import get_log
-
+from config import API_ID, API_HASH, SESSION_NAME, QQ_BOT_UIN, QQ_TARGET_GROUP
 # ========== 创建 BotClient ==========
 bot = BotClient()
 _log = get_log()
@@ -21,4 +21,4 @@ async def on_private_message(msg: PrivateMessage):
 
 # ========== 启动 BotClient==========
 if __name__ == "__main__":
-    bot.run(bt_uin="634346270") # 这里写 Bot 的 QQ 号
+    bot.run(bt_uin=QQ_BOT_UIN) # 这里写 Bot 的 QQ 号
