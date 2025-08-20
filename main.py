@@ -34,7 +34,7 @@ class TelegramMonitor:
         
         # 监听配置
         self.target_group_ids = []  # 目标群组ID列表
-        self.target_user_ids = []   # 目标用户ID列表
+        self.target_user_ids = {}   # 目标用户ID字典，以群组ID为键
         
         # QQ转发配置
         self.qq_target_group = QQ_TARGET_GROUP
@@ -114,36 +114,6 @@ class TelegramMonitor:
             bot.api.post_group_msg_sync(group_id=QQ_TARGET_GROUP, text=message_text)
         except Exception as e:
             logger.error(f"发送QQ消息时出错: {e}")
-
-    def format_links(self, text):
-        """
-        格式化文本中的链接，防止在QQ中被自动识别为可点击的超链接
-        
-        Args:
-            text (str): 包含链接的原始文本
-            
-        Returns:
-            str: 格式化后的文本，链接不再可点击
-        """
-        if not text:
-            return text
-            
-        # 将http://和https://链接中的点号替换为特殊字符，防止链接被识别
-        import re
-        
-        # 使用零宽空格(\u200B)插入到链接中，防止链接被识别
-        def replace_url(match):
-            url = match.group(0)
-            # 在特定位置插入零宽空格，防止链接被识别
-            if "https://" in url:
-                return url.replace("https://", "https://\u200B")
-            elif "http://" in url:
-                return url.replace("http://", "http://\u200B")
-            return url
-            
-        # 匹配http和https链接
-        formatted_text = re.sub(r'https?://[^\s]+', replace_url, text)
-        return formatted_text
 
     async def format_message_as_json(self, message, group_title, is_edited=False):
         """
@@ -227,10 +197,12 @@ class TelegramMonitor:
 
             # 显示监听配置
             print(f"监听的群组数量: {len(group_entities)}")
-            if self.target_user_ids:
-                print(f"监听的用户ID: {self.target_user_ids}")
-            else:
-                print("监听所有用户的消息")
+            for group_id in self.target_group_ids:
+                group_title = group_entities[group_id].title
+                if group_id in self.target_user_ids and self.target_user_ids[group_id]:
+                    print(f"群组 '{group_title}' 监听的用户ID: {self.target_user_ids[group_id]}")
+                else:
+                    print(f"群组 '{group_title}' 监听所有用户的消息")
             print("按 Ctrl+C 可提前停止监听")
             print("提示: 为了确保能够接收实时消息，请保持手机端Telegram在线并打开需要监听的群组")
 
@@ -257,11 +229,11 @@ class TelegramMonitor:
                 sender = await message.get_sender()
                 
                 # 如果指定了特定用户，则检查发送者是否匹配
-                if self.target_user_ids:
+                if group_id in self.target_user_ids and self.target_user_ids[group_id]:
                     is_target_user = False
                     if sender and isinstance(sender, User):
                         # 检查ID是否匹配
-                        if sender.id in self.target_user_ids:
+                        if sender.id in self.target_user_ids[group_id]:
                             is_target_user = True
                     
                     # 如果不是目标用户，跳过
@@ -295,10 +267,8 @@ class TelegramMonitor:
                     else:
                         formatted_time = "未知时间"
                     
-                    # 格式化链接，防止在QQ中被自动识别为可点击的超链接
-                    formatted_message_text = self.format_links(message_text)
-                    message_type = "[Telegram转发-编辑消息]" if message_json['message']['is_edited'] else "[Telegram转发]"
-                    formatted_message = f"时间: {formatted_time}\n内容: {formatted_message_text}"
+                    message_type = "[编辑]" if message_json['message']['is_edited'] else "[转发]"
+                    formatted_message = f"{message_type}\n群组: {group_title}\n发送者: {sender_name}\n时间: {formatted_time}\n内容: {message_text}"
                     self.send_to_qq_group(formatted_message)
                 except Exception as e:
                     logger.error(f"格式化消息时出错: {e}")
@@ -320,11 +290,11 @@ class TelegramMonitor:
                 sender = await message.get_sender()
                 
                 # 如果指定了特定用户，则检查发送者是否匹配
-                if self.target_user_ids:
+                if group_id in self.target_user_ids and self.target_user_ids[group_id]:
                     is_target_user = False
                     if sender and isinstance(sender, User):
                         # 检查ID是否匹配
-                        if sender.id in self.target_user_ids:
+                        if sender.id in self.target_user_ids[group_id]:
                             is_target_user = True
                     
                     # 如果不是目标用户，跳过
@@ -358,9 +328,7 @@ class TelegramMonitor:
                     else:
                         formatted_time = "未知时间"
                     
-                    # 格式化链接，防止在QQ中被自动识别为可点击的超链接
-                    formatted_message_text = self.format_links(message_text)
-                    formatted_message = f"时间: {formatted_time}\n内容: {formatted_message_text}"
+                    formatted_message = f"[编辑]\n群组: {group_title}\n发送者: {sender_name}\n时间: {formatted_time}\n内容: {message_text}"
                     self.send_to_qq_group(formatted_message)
                 except Exception as e:
                     logger.error(f"格式化编辑消息时出错: {e}")
@@ -448,25 +416,54 @@ class TelegramMonitor:
                 print(f"处理群组编号时出错: {e}")
                 return
             
-            # 询问用户输入目标用户ID（可选，多个用逗号分隔）
-            print("\n请输入要监听的用户ID（多个ID用逗号分隔），直接回车表示监听所有用户:")
-            print("例如: 123456789, 987654321")
-            user_ids_input = input("用户ID: ").strip()
-            
-            if user_ids_input:
-                try:
-                    # 处理用户ID输入
-                    self.target_user_ids = self.parse_input_ids(user_ids_input)
-                except Exception as e:
-                    print(f"处理用户ID时出错: {e}")
-                    return
+            # 为每个群组询问需要监听的用户ID
+            if len(self.target_group_ids) > 1:
+                print("\n检测到选择了多个群组，将为每个群组分别设置监听用户")
+                for group_id in self.target_group_ids:
+                    group_entity = await self.client.get_entity(group_id)
+                    group_title = group_entity.title
+                    
+                    print(f"\n群组: {group_title} (ID: {group_id})")
+                    print("请输入要监听的用户ID（多个ID用逗号分隔），直接回车表示监听所有用户:")
+                    print("例如: 123456789, 987654321")
+                    user_ids_input = input("用户ID: ").strip()
+                    
+                    if user_ids_input:
+                        try:
+                            # 处理用户ID输入
+                            user_ids = self.parse_input_ids(user_ids_input)
+                            self.target_user_ids[group_id] = user_ids
+                        except Exception as e:
+                            print(f"处理用户ID时出错: {e}")
+                            self.target_user_ids[group_id] = []
+                    else:
+                        self.target_user_ids[group_id] = []
+            else:
+                # 只选择了一个群组，使用旧的方式设置用户ID
+                print("\n请输入要监听的用户ID（多个ID用逗号分隔），直接回车表示监听所有用户:")
+                print("例如: 123456789, 987654321")
+                user_ids_input = input("用户ID: ").strip()
+                
+                if user_ids_input:
+                    try:
+                        # 处理用户ID输入
+                        user_ids = self.parse_input_ids(user_ids_input)
+                        # 为所有选定的群组设置相同的用户ID
+                        for group_id in self.target_group_ids:
+                            self.target_user_ids[group_id] = user_ids
+                    except Exception as e:
+                        print(f"处理用户ID时出错: {e}")
+                        return
             
             print(f"\n配置完成:")
             print(f"监听群组数量: {len(self.target_group_ids)}")
-            if self.target_user_ids:
-                print(f"监听用户ID: {self.target_user_ids}")
-            else:
-                print("监听所有用户")
+            for group_id in self.target_group_ids:
+                group_entity = await self.client.get_entity(group_id)
+                group_title = group_entity.title
+                if group_id in self.target_user_ids and self.target_user_ids[group_id]:
+                    print(f"群组 '{group_title}' 监听用户ID: {self.target_user_ids[group_id]}")
+                else:
+                    print(f"群组 '{group_title}' 监听所有用户")
             
             # 开始监听
             await self.monitor_groups_messages()
