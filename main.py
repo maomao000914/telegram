@@ -8,12 +8,12 @@ from telethon.tl.types import (
     Chat, Channel, User
 )
 from telethon import events
-from ncatbot.core import BotClient, GroupMessage, PrivateMessage
+from ncatbot.core import BotClient
 
 
-from config import API_ID, API_HASH, SESSION_NAME, QQ_BOT_UIN, QQ_TARGET_GROUP
+from config import API_ID, API_HASH, SESSION_NAME, QQ_BOT_UIN, QQ_ADMIN_UIN, QQ_TARGET_GROUP
 bot = BotClient()
-api = bot.run_blocking(bt_uin=QQ_BOT_UIN, root="1524366734")
+api = bot.run_blocking(bt_uin=QQ_BOT_UIN, root=QQ_ADMIN_UIN)
 # 设置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -59,10 +59,10 @@ class TelegramMonitor:
                 # 获取一些群组信息以保持连接活跃
                 if self.target_group_ids:
                     await self.client.get_entity(self.target_group_ids[0])
-                await asyncio.sleep(60)  # 每60秒执行一次
+                await asyncio.sleep(30)  # 每30秒执行一次
             except Exception as e:
                 logger.warning(f"保持连接活跃时出错: {e}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)
 
     async def get_groups_list(self):
         """
@@ -254,20 +254,9 @@ class TelegramMonitor:
                     message_text = message_json['message']['text']
                     # 获取消息时间并格式化
                     message_time = message_json['message']['date']
-                    if message_time:
-                        # 将ISO格式时间转换为更易读的格式
-                        from datetime import datetime
-                        try:
-                            dt = datetime.fromisoformat(message_time.replace('Z', '+00:00'))
-                            # 转换为北京时间 (UTC+8)
-                            beijing_time = dt.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
-                            formatted_time = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
-                        except:
-                            formatted_time = message_time
-                    else:
-                        formatted_time = "未知时间"
+                    formatted_time = self.format_message_time(message_time)
                     
-                    message_type = "[编辑]" if message_json['message']['is_edited'] else "[转发]"
+                    message_type = "[编辑]" if message_json['message']['is_edited'] else "[发送]"
                     formatted_message = f"{message_type}\n群组: {group_title}\n发送者: {sender_name}\n时间: {formatted_time}\n内容: {message_text}"
                     self.send_to_qq_group(formatted_message)
                 except Exception as e:
@@ -315,18 +304,7 @@ class TelegramMonitor:
                     message_text = message_json['message']['text']
                     # 获取消息时间并格式化
                     message_time = message_json['message']['edited'] or message_json['message']['date']
-                    if message_time:
-                        # 将ISO格式时间转换为更易读的格式
-                        from datetime import datetime
-                        try:
-                            dt = datetime.fromisoformat(message_time.replace('Z', '+00:00'))
-                            # 转换为北京时间 (UTC+8)
-                            beijing_time = dt.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
-                            formatted_time = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
-                        except:
-                            formatted_time = message_time
-                    else:
-                        formatted_time = "未知时间"
+                    formatted_time = self.format_message_time(message_time)
                     
                     formatted_message = f"[编辑]\n群组: {group_title}\n发送者: {sender_name}\n时间: {formatted_time}\n内容: {message_text}"
                     self.send_to_qq_group(formatted_message)
@@ -367,9 +345,33 @@ class TelegramMonitor:
             part = part.strip()
             if part.isdigit() or (part.startswith('-') and part[1:].isdigit()):
                 ids.append(int(part))
+            elif '-' in part:
+                # 处理范围格式，如 "1-5"
+                try:
+                    start, end = map(int, part.split('-'))
+                    ids.extend(range(start, end + 1))
+                except ValueError:
+                    logger.warning(f"无效的ID范围格式: {part}")
             else:
                 logger.warning(f"无效的ID格式: {part}")
         return ids
+
+    def format_message_time(self, message_time):
+        """
+        格式化消息时间
+        """
+        if not message_time:
+            return "未知时间"
+            
+        try:
+            # 将ISO格式时间转换为更易读的格式
+            dt = datetime.fromisoformat(message_time.replace('Z', '+00:00'))
+            # 转换为北京时间 (UTC+8)
+            beijing_time = dt.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=8)))
+            return beijing_time.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            logger.warning(f"时间格式化失败: {e}")
+            return message_time
 
     async def run(self):
         """
@@ -417,30 +419,13 @@ class TelegramMonitor:
                 return
             
             # 为每个群组询问需要监听的用户ID
-            if len(self.target_group_ids) > 1:
-                print("\n检测到选择了多个群组，将为每个群组分别设置监听用户")
-                for group_id in self.target_group_ids:
-                    group_entity = await self.client.get_entity(group_id)
-                    group_title = group_entity.title
-                    
-                    print(f"\n群组: {group_title} (ID: {group_id})")
-                    print("请输入要监听的用户ID（多个ID用逗号分隔），直接回车表示监听所有用户:")
-                    print("例如: 123456789, 987654321")
-                    user_ids_input = input("用户ID: ").strip()
-                    
-                    if user_ids_input:
-                        try:
-                            # 处理用户ID输入
-                            user_ids = self.parse_input_ids(user_ids_input)
-                            self.target_user_ids[group_id] = user_ids
-                        except Exception as e:
-                            print(f"处理用户ID时出错: {e}")
-                            self.target_user_ids[group_id] = []
-                    else:
-                        self.target_user_ids[group_id] = []
-            else:
-                # 只选择了一个群组，使用旧的方式设置用户ID
-                print("\n请输入要监听的用户ID（多个ID用逗号分隔），直接回车表示监听所有用户:")
+            print("\n将为每个群组分别设置监听用户")
+            for group_id in self.target_group_ids:
+                group_entity = await self.client.get_entity(group_id)
+                group_title = group_entity.title
+                
+                print(f"\n群组: {group_title} (ID: {group_id})")
+                print("请输入要监听的用户ID（多个ID用逗号分隔），直接回车表示监听所有用户:")
                 print("例如: 123456789, 987654321")
                 user_ids_input = input("用户ID: ").strip()
                 
@@ -448,12 +433,12 @@ class TelegramMonitor:
                     try:
                         # 处理用户ID输入
                         user_ids = self.parse_input_ids(user_ids_input)
-                        # 为所有选定的群组设置相同的用户ID
-                        for group_id in self.target_group_ids:
-                            self.target_user_ids[group_id] = user_ids
+                        self.target_user_ids[group_id] = user_ids
                     except Exception as e:
                         print(f"处理用户ID时出错: {e}")
-                        return
+                        self.target_user_ids[group_id] = []
+                else:
+                    self.target_user_ids[group_id] = []
             
             print(f"\n配置完成:")
             print(f"监听群组数量: {len(self.target_group_ids)}")
