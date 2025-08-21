@@ -11,7 +11,8 @@ API_HASH = ''
 SESSION_NAME = "telegram_session"
 
 # QQ机器人配置 (用于消息转发)
-QQ_BOT_UIN = ""        # 用于登录的QQ号
+QQ_BOT_UIN = ""        # 用于机器人登录的QQ号
+QQ_ADMIN_UIN = ""      # 机器人管理员QQ号
 QQ_TARGET_GROUP = ""   # 目标QQ群号码
 QQ_WS_URI = "ws://localhost:3001"  # NapCat的WebSocket地址
 QQ_BOT_TOKEN = ""               # 如果设置了access_token，请填写
